@@ -7,6 +7,7 @@ from playwright.sync_api import sync_playwright
 from app.ai.test_plan_generator import TestPlanGenerator
 from app.browser.page_inspector import PageInspector
 from app.browser.test_case_runner import TestCaseRunner
+from app.reporting.result_writer import ResultWriter
 
 
 load_dotenv()
@@ -37,6 +38,7 @@ generator = TestPlanGenerator(
 
 inspector = PageInspector()
 runner = TestCaseRunner()
+writer = ResultWriter()
 
 
 with sync_playwright() as playwright:
@@ -44,7 +46,6 @@ with sync_playwright() as playwright:
         headless=False
     )
 
-    # First browser page: inspect the website.
     inspection_context = browser.new_context()
     inspection_page = inspection_context.new_page()
 
@@ -62,13 +63,12 @@ with sync_playwright() as playwright:
 
     inspection_context.close()
 
-    # Send discovered elements to Hugging Face.
     test_plan = generator.generate(
         website_name=inspection.title,
         start_url=inspection.url,
         objective=(
-            "Test the login form and verify "
-            "that signing in displays the welcome message."
+            "Test the login form and verify that "
+            "signing in displays the welcome message."
         ),
         page_description=inspection.model_dump_json(
             indent=2
@@ -78,7 +78,6 @@ with sync_playwright() as playwright:
     print("\nGenerated test plan:")
     print(test_plan.model_dump_json(indent=2))
 
-    # Execute every AI-generated test case.
     for test_case in test_plan.test_cases:
         print(f"\nRunning: {test_case.name}")
 
@@ -88,5 +87,11 @@ with sync_playwright() as playwright:
         )
 
         print(result.model_dump_json(indent=2))
+
+        report_path = writer.write(result)
+
+        print(
+            f"\nJSON report saved to: {report_path}"
+        )
 
     browser.close()
