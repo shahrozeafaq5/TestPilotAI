@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Locator Practice</title>
+</head>
+<body>
+    <h1>TestPilot Login</h1>
+
+    <label for="email">Email</label>
+    <input
+        id="email"
+        type="email"
+        placeholder="name@example.com"
+    >
+
+    <label for="password">Password</label>
+    <input
+        id="password"
+        type="password"
+        placeholder="Enter password"
+    >
+
+    <button id="login-button">Sign in</button>
+
+    <p id="message" hidden>Welcome to TestPilot!</p>
+
+    <script>
+        document
+            .getElementById("login-button")
+            .addEventListener("click", () => {
+                document.getElementById("message").hidden = false;
+            });
+    </script>
+</body>
+</html>
