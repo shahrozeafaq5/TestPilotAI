@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Diagnostics Demo</title>
+</head>
+<body>
+    <h1>Diagnostics Test</h1>
+
+    <script>
+        console.error("Demo console error");
+
+        setTimeout(() => {
+            throw new Error("Demo uncaught JavaScript error");
+        }, 10);
+    </script>
+</body>
+</html>
