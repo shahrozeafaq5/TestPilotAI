@@ -5,6 +5,7 @@ from app.services.url_security import (
     UnsafeURLError,
     URLSecurityPolicy,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
@@ -154,7 +155,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 @app.get(
     "/health",
     response_model=HealthResponse,
@@ -174,7 +184,6 @@ def health_check() -> HealthResponse:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_test(
-
     payload: RunTestRequest,
     request: Request,
 ) -> JobCreatedResponse:
@@ -183,22 +192,22 @@ def submit_test(
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
-    url_security_policy: URLSecurityPolicy = (
-    request.app.state.url_security_policy
-)
 
-try:
-    safe_page_url = (
-        url_security_policy.validate(
-            payload.page_url
-        )
+    url_security_policy: URLSecurityPolicy = (
+        request.app.state.url_security_policy
     )
 
-except UnsafeURLError as error:
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=str(error),
-    ) from error
+    try:
+        safe_page_url = url_security_policy.validate(
+            payload.page_url
+        )
+
+    except UnsafeURLError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
     job = job_manager.submit(
         page_url=safe_page_url,
         objective=payload.objective,
@@ -243,8 +252,6 @@ def list_test_jobs(
         count=len(jobs),
         jobs=jobs,
     )
-
-
 @app.get(
     "/tests/jobs/{job_id}/runs",
     response_model=JobRunsResponse,

@@ -1,0 +1,85 @@
+:root {
+  font-family:
+    Inter,
+    system-ui,
+    sans-serif;
+
+  color: #e8e8ec;
+  background: #09090b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.card {
+  width: min(680px, 100%);
+  padding: 48px;
+  border: 1px solid #29292f;
+  border-radius: 20px;
+  background: #111115;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #9b8cff;
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: clamp(36px, 7vw, 64px);
+  line-height: 1;
+}
+
+.card > p:not(.eyebrow) {
+  color: #a7a7b0;
+  line-height: 1.7;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 32px;
+  padding: 14px 16px;
+  border: 1px solid #323238;
+  border-radius: 12px;
+  background: #18181d;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.success {
+  color: #75dc9b;
+}
+
+.error {
+  color: #ff8585;
+}
