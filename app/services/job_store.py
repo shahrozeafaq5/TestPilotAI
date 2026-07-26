@@ -19,7 +19,44 @@ class JobStore:
         )
 
         self._initialize_database()
+    def list_recent(
+    self,
+    limit: int = 20,
+    status: str | None = None,
+) -> list[TestJob]:
+        query = """
+            SELECT
+                job_id,
+                status,
+                page_url,
+                objective,
+                headless,
+                created_at,
+                updated_at,
+                result_json,
+                error
+            FROM test_jobs
+        """
 
+        parameters: list[object] = []
+
+        if status is not None:
+            query += " WHERE status = ?"
+            parameters.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        parameters.append(limit)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                parameters,
+            ).fetchall()
+
+        return [
+            self._row_to_job(row)
+            for row in rows
+        ]
     def create(self, job: TestJob) -> None:
         with self._connect() as connection:
             connection.execute(

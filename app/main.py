@@ -9,7 +9,13 @@ from fastapi import (
     Request,
     status,
 )
-
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from app.ai.bug_report_generator import (
     BugReportGenerator,
 )
@@ -19,9 +25,13 @@ from app.ai.test_plan_generator import (
 from app.api.schemas import (
     HealthResponse,
     JobCreatedResponse,
+    JobListResponse,
     RunTestRequest,
 )
-from app.models.job import TestJob
+from app.models.job import (
+    JobStatus,
+    TestJob,
+)
 from app.services.job_manager import (
     TestJobManager,
 )
@@ -153,7 +163,35 @@ def submit_test(
         ),
     )
 
+@app.get(
+    "/tests/jobs",
+    response_model=JobListResponse,
+)
+def list_test_jobs(
+    request: Request,
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+    ),
+    job_status: JobStatus | None = Query(
+        default=None,
+        alias="status",
+    ),
+) -> JobListResponse:
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
 
+    jobs = job_manager.list_recent(
+        limit=limit,
+        status=job_status,
+    )
+
+    return JobListResponse(
+        count=len(jobs),
+        jobs=jobs,
+    )
 @app.get(
     "/tests/jobs/{job_id}",
     response_model=TestJob,

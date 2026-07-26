@@ -31,7 +31,21 @@ class TestJobManager:
             max_workers=max_workers,
             thread_name_prefix="testpilot-worker",
         )
+        def list_recent(
+    self,
+    limit: int = 20,
+    status: JobStatus | None = None,
+) -> list[TestJob]:
+            with self.lock:
+                jobs = self.job_store.list_recent(
+                    limit=limit,
+                    status=status,
+                )
 
+            return [
+                job.model_copy(deep=True)
+                for job in jobs
+            ]
     def submit(
         self,
         page_url: str,
