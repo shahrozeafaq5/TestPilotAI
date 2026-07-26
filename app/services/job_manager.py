@@ -7,9 +7,7 @@ from playwright.sync_api import sync_playwright
 
 from app.models.job import JobStatus, TestJob
 from app.services.job_store import JobStore
-from app.services.test_orchestrator import (
-    TestOrchestrator,
-)
+from app.services.test_orchestrator import TestOrchestrator
 
 
 def current_utc_time() -> datetime:
@@ -31,21 +29,7 @@ class TestJobManager:
             max_workers=max_workers,
             thread_name_prefix="testpilot-worker",
         )
-        def list_recent(
-    self,
-    limit: int = 20,
-    status: JobStatus | None = None,
-) -> list[TestJob]:
-            with self.lock:
-                jobs = self.job_store.list_recent(
-                    limit=limit,
-                    status=status,
-                )
 
-            return [
-                job.model_copy(deep=True)
-                for job in jobs
-            ]
     def submit(
         self,
         page_url: str,
@@ -90,6 +74,22 @@ class TestJobManager:
 
         return job.model_copy(deep=True)
 
+    def list_recent(
+        self,
+        limit: int = 20,
+        status: JobStatus | None = None,
+    ) -> list[TestJob]:
+        with self.lock:
+            jobs = self.job_store.list_recent(
+                limit=limit,
+                status=status,
+            )
+
+        return [
+            job.model_copy(deep=True)
+            for job in jobs
+        ]
+
     def shutdown(self) -> None:
         self.executor.shutdown(
             wait=False,
@@ -115,12 +115,10 @@ class TestJobManager:
                 )
 
                 try:
-                    workflow_result = (
-                        self.orchestrator.run(
-                            browser=browser,
-                            page_url=page_url,
-                            objective=objective,
-                        )
+                    workflow_result = self.orchestrator.run(
+                        browser=browser,
+                        page_url=page_url,
+                        objective=objective,
                     )
 
                 finally:
