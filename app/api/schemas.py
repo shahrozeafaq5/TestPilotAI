@@ -1,3 +1,4 @@
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -47,3 +48,14 @@ class RunTestRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     service: str
+
+
+class JobCreatedResponse(BaseModel):
+    job_id: str
+
+    status: Literal[
+        "queued",
+        "running",
+    ]
+
+    status_url: str

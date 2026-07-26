@@ -1,0 +1,169 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from threading import Lock
+from typing import Literal
+from uuid import uuid4
+
+from pydantic import BaseModel
+from playwright.sync_api import sync_playwright
+
+from app.services.test_orchestrator import (
+    TestOrchestrator,
+    WorkflowResult,
+)
+
+
+JobStatus = Literal[
+    "queued",
+    "running",
+    "completed",
+    "failed",
+]
+
+
+def current_utc_time() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class TestJob(BaseModel):
+    job_id: str
+    status: JobStatus
+
+    page_url: str
+    objective: str
+    headless: bool
+
+    created_at: datetime
+    updated_at: datetime
+
+    result: WorkflowResult | None = None
+    error: str | None = None
+
+
+class TestJobManager:
+    def __init__(
+        self,
+        orchestrator: TestOrchestrator,
+        max_workers: int = 1,
+    ) -> None:
+        self.orchestrator = orchestrator
+
+        self.jobs: dict[str, TestJob] = {}
+        self.lock = Lock()
+
+        self.executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="testpilot-worker",
+        )
+
+    def submit(
+        self,
+        page_url: str,
+        objective: str,
+        headless: bool,
+    ) -> TestJob:
+        job_id = uuid4().hex[:12]
+        now = current_utc_time()
+
+        job = TestJob(
+            job_id=job_id,
+            status="queued",
+            page_url=page_url,
+            objective=objective,
+            headless=headless,
+            created_at=now,
+            updated_at=now,
+        )
+
+        with self.lock:
+            self.jobs[job_id] = job
+
+        self.executor.submit(
+            self._execute_job,
+            job_id,
+            page_url,
+            objective,
+            headless,
+        )
+
+        return job.model_copy(deep=True)
+
+    def get(
+        self,
+        job_id: str,
+    ) -> TestJob | None:
+        with self.lock:
+            job = self.jobs.get(job_id)
+
+            if job is None:
+                return None
+
+            return job.model_copy(deep=True)
+
+    def shutdown(self) -> None:
+        self.executor.shutdown(
+            wait=False,
+            cancel_futures=True,
+        )
+
+    def _execute_job(
+        self,
+        job_id: str,
+        page_url: str,
+        objective: str,
+        headless: bool,
+    ) -> None:
+        self._update_job(
+            job_id=job_id,
+            status="running",
+        )
+
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    headless=headless
+                )
+
+                try:
+                    workflow_result = (
+                        self.orchestrator.run(
+                            browser=browser,
+                            page_url=page_url,
+                            objective=objective,
+                        )
+                    )
+
+                finally:
+                    browser.close()
+
+            self._update_job(
+                job_id=job_id,
+                status="completed",
+                result=workflow_result,
+                error=None,
+            )
+
+        except Exception as error:
+            self._update_job(
+                job_id=job_id,
+                status="failed",
+                error=str(error),
+            )
+
+    def _update_job(
+        self,
+        job_id: str,
+        status: JobStatus,
+        result: WorkflowResult | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.lock:
+            job = self.jobs.get(job_id)
+
+            if job is None:
+                return
+
+            job.status = status
+            job.updated_at = current_utc_time()
+            job.result = result
+            job.error = error

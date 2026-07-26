@@ -7,8 +7,8 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
+    status,
 )
-from playwright.sync_api import sync_playwright
 
 from app.ai.bug_report_generator import (
     BugReportGenerator,
@@ -18,11 +18,15 @@ from app.ai.test_plan_generator import (
 )
 from app.api.schemas import (
     HealthResponse,
+    JobCreatedResponse,
     RunTestRequest,
+)
+from app.services.job_manager import (
+    TestJob,
+    TestJobManager,
 )
 from app.services.test_orchestrator import (
     TestOrchestrator,
-    WorkflowResult,
 )
 
 
@@ -65,11 +69,16 @@ async def lifespan(
 ) -> AsyncIterator[None]:
     print("Starting TestPilot API...")
 
-    app.state.orchestrator = (
-        create_orchestrator()
+    orchestrator = create_orchestrator()
+
+    app.state.job_manager = TestJobManager(
+        orchestrator=orchestrator,
+        max_workers=1,
     )
 
     yield
+
+    app.state.job_manager.shutdown()
 
     print("Stopping TestPilot API...")
 
@@ -80,7 +89,7 @@ app = FastAPI(
         "AI-powered autonomous web testing "
         "and bug-reporting API."
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -98,36 +107,50 @@ def health_check() -> HealthResponse:
 
 @app.post(
     "/tests/run",
-    response_model=WorkflowResult,
+    response_model=JobCreatedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def run_test(
+def submit_test(
     payload: RunTestRequest,
     request: Request,
-) -> WorkflowResult:
-    orchestrator: TestOrchestrator = (
-        request.app.state.orchestrator
+) -> JobCreatedResponse:
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
     )
 
-    try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=payload.headless
-            )
+    job = job_manager.submit(
+        page_url=payload.page_url,
+        objective=payload.objective,
+        headless=payload.headless,
+    )
 
-            try:
-                workflow_result = orchestrator.run(
-                    browser=browser,
-                    page_url=payload.page_url,
-                    objective=payload.objective,
-                )
+    return JobCreatedResponse(
+        job_id=job.job_id,
+        status=job.status,
+        status_url=(
+            f"/tests/jobs/{job.job_id}"
+        ),
+    )
 
-                return workflow_result
 
-            finally:
-                browser.close()
+@app.get(
+    "/tests/jobs/{job_id}",
+    response_model=TestJob,
+)
+def get_test_job(
+    job_id: str,
+    request: Request,
+) -> TestJob:
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
 
-    except Exception as error:
+    job = job_manager.get(job_id)
+
+    if job is None:
         raise HTTPException(
-            status_code=500,
-            detail=f"Test execution failed: {error}",
-        ) from error
+            status_code=404,
+            detail="Test job was not found.",
+        )
+
+    return job
