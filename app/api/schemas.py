@@ -1,6 +1,6 @@
 from typing import Literal
 from urllib.parse import urlparse
-
+from app.models.run_record import StoredTestRun
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -71,3 +71,7 @@ class JobListResponse(BaseModel):
 class JobDeletedResponse(BaseModel):
     job_id: str
     message: str
+class JobRunsResponse(BaseModel):
+    job_id: str
+    count: int
+    runs: list[StoredTestRun]

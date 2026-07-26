@@ -1,15 +1,9 @@
 from pydantic import BaseModel, Field
 from playwright.sync_api import Browser
 
-from app.ai.bug_report_generator import (
-    BugReportGenerator,
-)
-from app.ai.test_plan_generator import (
-    TestPlanGenerator,
-)
-from app.browser.page_inspector import (
-    PageInspector,
-)
+from app.ai.bug_report_generator import BugReportGenerator
+from app.ai.test_plan_generator import TestPlanGenerator
+from app.browser.page_inspector import PageInspector
 from app.browser.test_case_runner import (
     TestCaseResult,
     TestCaseRunner,
@@ -17,15 +11,11 @@ from app.browser.test_case_runner import (
 from app.models.bug_report import BugReport
 from app.models.page_inspection import PageInspection
 from app.models.test_case import TestPlan
-from app.reporting.result_writer import ResultWriter
 
 
 class WorkflowRunResult(BaseModel):
     test_result: TestCaseResult
-    result_path: str
-
     bug_report: BugReport | None = None
-    bug_report_path: str | None = None
 
 
 class WorkflowResult(BaseModel):
@@ -44,15 +34,9 @@ class TestOrchestrator:
         bug_report_generator: BugReportGenerator,
         page_inspector: PageInspector | None = None,
         test_case_runner: TestCaseRunner | None = None,
-        result_writer: ResultWriter | None = None,
     ) -> None:
-        self.test_plan_generator = (
-            test_plan_generator
-        )
-
-        self.bug_report_generator = (
-            bug_report_generator
-        )
+        self.test_plan_generator = test_plan_generator
+        self.bug_report_generator = bug_report_generator
 
         self.page_inspector = (
             page_inspector or PageInspector()
@@ -60,10 +44,6 @@ class TestOrchestrator:
 
         self.test_case_runner = (
             test_case_runner or TestCaseRunner()
-        )
-
-        self.result_writer = (
-            result_writer or ResultWriter()
         )
 
     def run(
@@ -82,17 +62,13 @@ class TestOrchestrator:
             inspection.model_dump_json(indent=2)
         )
 
-        test_plan = (
-            self.test_plan_generator.generate(
-                website_name=inspection.title,
-                start_url=inspection.url,
-                objective=objective,
-                page_description=(
-                    inspection.model_dump_json(
-                        indent=2
-                    )
-                ),
-            )
+        test_plan = self.test_plan_generator.generate(
+            website_name=inspection.title,
+            start_url=inspection.url,
+            objective=objective,
+            page_description=(
+                inspection.model_dump_json(indent=2)
+            ),
         )
 
         print("\nGenerated test plan:")
@@ -113,21 +89,9 @@ class TestOrchestrator:
                 test_case=test_case,
             )
 
-            result_path = (
-                self.result_writer.write_result(
-                    test_result
-                )
-            )
-
             print("\nTest result:")
             print(
-                test_result.model_dump_json(
-                    indent=2
-                )
-            )
-
-            print(
-                f"\nResult saved to: {result_path}"
+                test_result.model_dump_json(indent=2)
             )
 
             bug_report = (
@@ -136,41 +100,16 @@ class TestOrchestrator:
                 )
             )
 
-            bug_report_path = None
-
             if bug_report is not None:
-                saved_bug_report_path = (
-                    self.result_writer
-                    .write_bug_report(
-                        run_id=test_result.run_id,
-                        bug_report=bug_report,
-                    )
-                )
-
-                bug_report_path = str(
-                    saved_bug_report_path
-                )
-
                 print("\nGenerated bug report:")
                 print(
-                    bug_report.model_dump_json(
-                        indent=2
-                    )
-                )
-
-                print(
-                    "\nBug report saved to: "
-                    f"{saved_bug_report_path}"
+                    bug_report.model_dump_json(indent=2)
                 )
 
             workflow_result.runs.append(
                 WorkflowRunResult(
                     test_result=test_result,
-                    result_path=str(result_path),
                     bug_report=bug_report,
-                    bug_report_path=(
-                        bug_report_path
-                    ),
                 )
             )
 
@@ -192,9 +131,7 @@ class TestOrchestrator:
                 timeout=30_000,
             )
 
-            return self.page_inspector.inspect(
-                page
-            )
+            return self.page_inspector.inspect(page)
 
         finally:
             context.close()

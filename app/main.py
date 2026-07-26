@@ -6,46 +6,41 @@ from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
     HTTPException,
-    Request,
-    status,
-)
-from fastapi import (
-    FastAPI,
-    HTTPException,
     Query,
     Request,
     status,
 )
-from app.ai.bug_report_generator import (
-    BugReportGenerator,
-)
-from app.ai.test_plan_generator import (
-    TestPlanGenerator,
-)
+from fastapi.responses import FileResponse
+
+from app.ai.bug_report_generator import BugReportGenerator
+from app.ai.test_plan_generator import TestPlanGenerator
 from app.api.schemas import (
     HealthResponse,
     JobCreatedResponse,
     JobDeletedResponse,
     JobListResponse,
+    JobRunsResponse,
     RunTestRequest,
 )
-from app.models.job import (
-    JobStatus,
-    TestJob,
+from app.models.job import JobStatus, TestJob
+from app.models.run_record import StoredTestRun
+from app.services.artifact_service import (
+    ArtifactNotFoundError,
+    ArtifactService,
+    InvalidArtifactNameError,
 )
-from app.services.job_manager import (
-    TestJobManager,
-)
+from app.services.job_manager import TestJobManager
 from app.services.job_store import JobStore
-from app.services.test_orchestrator import (
-    TestOrchestrator,
-)
+from app.services.run_store import RunStore
+from app.services.test_orchestrator import TestOrchestrator
 
 
 load_dotenv()
 
 
 def create_orchestrator() -> TestOrchestrator:
+    """Create the shared TestPilot workflow service."""
+
     token = os.getenv("HF_TOKEN")
     model_id = os.getenv("HF_MODEL")
 
@@ -79,6 +74,8 @@ def create_orchestrator() -> TestOrchestrator:
 async def lifespan(
     app: FastAPI,
 ) -> AsyncIterator[None]:
+    """Create shared services at startup and clean up at shutdown."""
+
     print("Starting TestPilot API...")
 
     orchestrator = create_orchestrator()
@@ -88,8 +85,17 @@ async def lifespan(
         "data/testpilot.db",
     )
 
+    artifacts_path = os.getenv(
+        "TESTPILOT_ARTIFACTS_PATH",
+        "artifacts/runs",
+    )
+
     job_store = JobStore(
-        database_path=database_path
+        database_path=database_path,
+    )
+
+    run_store = RunStore(
+        database_path=database_path,
     )
 
     interrupted_jobs = (
@@ -105,14 +111,20 @@ async def lifespan(
     app.state.job_manager = TestJobManager(
         orchestrator=orchestrator,
         job_store=job_store,
+        run_store=run_store,
         max_workers=1,
     )
 
-    yield
+    app.state.artifact_service = ArtifactService(
+        runs_directory=artifacts_path,
+    )
 
-    app.state.job_manager.shutdown()
+    try:
+        yield
 
-    print("Stopping TestPilot API...")
+    finally:
+        app.state.job_manager.shutdown()
+        print("Stopping TestPilot API...")
 
 
 app = FastAPI(
@@ -121,7 +133,7 @@ app = FastAPI(
         "AI-powered autonomous web testing "
         "and bug-reporting API."
     ),
-    version="0.3.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -131,6 +143,8 @@ app = FastAPI(
     response_model=HealthResponse,
 )
 def health_check() -> HealthResponse:
+    """Verify that the API is running."""
+
     return HealthResponse(
         status="healthy",
         service="TestPilot AI",
@@ -146,6 +160,8 @@ def submit_test(
     payload: RunTestRequest,
     request: Request,
 ) -> JobCreatedResponse:
+    """Submit a website test as a background job."""
+
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
@@ -159,10 +175,9 @@ def submit_test(
     return JobCreatedResponse(
         job_id=job.job_id,
         status=job.status,
-        status_url=(
-            f"/tests/jobs/{job.job_id}"
-        ),
+        status_url=f"/tests/jobs/{job.job_id}",
     )
+
 
 @app.get(
     "/tests/jobs",
@@ -180,6 +195,8 @@ def list_test_jobs(
         alias="status",
     ),
 ) -> JobListResponse:
+    """Return recent jobs, optionally filtered by status."""
+
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
@@ -193,6 +210,115 @@ def list_test_jobs(
         count=len(jobs),
         jobs=jobs,
     )
+
+
+@app.get(
+    "/tests/jobs/{job_id}/runs",
+    response_model=JobRunsResponse,
+)
+def list_job_runs(
+    job_id: str,
+    request: Request,
+) -> JobRunsResponse:
+    """Return all detailed runs belonging to one job."""
+
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
+
+    job = job_manager.get(job_id)
+
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Test job was not found.",
+        )
+
+    runs = job_manager.list_runs(job_id)
+
+    return JobRunsResponse(
+        job_id=job_id,
+        count=len(runs),
+        runs=runs,
+    )
+
+
+@app.get(
+    "/tests/runs/{run_id}",
+    response_model=StoredTestRun,
+)
+def get_test_run(
+    run_id: str,
+    request: Request,
+) -> StoredTestRun:
+    """Return one run with steps, diagnostics, and bug report."""
+
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
+
+    run = job_manager.get_run(run_id)
+
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Test run was not found.",
+        )
+
+    return run
+
+
+@app.get(
+    "/tests/runs/{run_id}/screenshots/{filename}",
+    response_class=FileResponse,
+)
+def get_run_screenshot(
+    run_id: str,
+    filename: str,
+    request: Request,
+) -> FileResponse:
+    """Return a screenshot associated with a stored test run."""
+
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
+
+    artifact_service: ArtifactService = (
+        request.app.state.artifact_service
+    )
+
+    run = job_manager.get_run(run_id)
+
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Test run was not found.",
+        )
+
+    try:
+        screenshot_path = artifact_service.get_screenshot(
+            run=run,
+            filename=filename,
+        )
+
+    except InvalidArtifactNameError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+    except ArtifactNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+
+    return FileResponse(
+        path=screenshot_path,
+        filename=filename,
+    )
+
+
 @app.post(
     "/tests/jobs/{job_id}/cancel",
     response_model=TestJob,
@@ -201,6 +327,8 @@ def cancel_test_job(
     job_id: str,
     request: Request,
 ) -> TestJob:
+    """Cancel a job that is still queued."""
+
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
@@ -210,13 +338,13 @@ def cancel_test_job(
 
     except ValueError as error:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
     if job is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Test job was not found.",
         )
 
@@ -231,6 +359,8 @@ def delete_test_job(
     job_id: str,
     request: Request,
 ) -> JobDeletedResponse:
+    """Delete a completed, failed, or cancelled job."""
+
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
@@ -240,13 +370,13 @@ def delete_test_job(
 
     except ValueError as error:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
     if not deleted:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Test job was not found.",
         )
 
@@ -254,7 +384,6 @@ def delete_test_job(
         job_id=job_id,
         message="Test job was deleted.",
     )
-
 
 
 @app.get(
@@ -265,6 +394,8 @@ def get_test_job(
     job_id: str,
     request: Request,
 ) -> TestJob:
+    """Return one job's status and summary."""
+
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
@@ -273,7 +404,7 @@ def get_test_job(
 
     if job is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Test job was not found.",
         )
 

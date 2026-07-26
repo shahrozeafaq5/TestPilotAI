@@ -9,9 +9,12 @@ from uuid import uuid4
 from playwright.sync_api import sync_playwright
 
 from app.models.job import JobStatus, TestJob
+from app.models.run_record import StoredTestRun
 from app.services.job_store import JobStore
+from app.services.run_store import RunStore
 from app.services.test_orchestrator import (
     TestOrchestrator,
+    WorkflowResult,
 )
 
 
@@ -24,10 +27,12 @@ class TestJobManager:
         self,
         orchestrator: TestOrchestrator,
         job_store: JobStore,
+        run_store: RunStore,
         max_workers: int = 1,
     ) -> None:
         self.orchestrator = orchestrator
         self.job_store = job_store
+        self.run_store = run_store
         self.lock = Lock()
 
         self.executor = ThreadPoolExecutor(
@@ -108,6 +113,32 @@ class TestJobManager:
             job.model_copy(deep=True)
             for job in jobs
         ]
+
+    def list_runs(
+        self,
+        job_id: str,
+    ) -> list[StoredTestRun]:
+        with self.lock:
+            runs = self.run_store.list_by_job_id(
+                job_id
+            )
+
+        return [
+            run.model_copy(deep=True)
+            for run in runs
+        ]
+
+    def get_run(
+        self,
+        run_id: str,
+    ) -> StoredTestRun | None:
+        with self.lock:
+            run = self.run_store.get_run(run_id)
+
+        if run is None:
+            return None
+
+        return run.model_copy(deep=True)
 
     def cancel(
         self,
@@ -221,12 +252,22 @@ class TestJobManager:
                 finally:
                     browser.close()
 
+            # Store full structured results in the
+            # normalized database tables.
+            self.run_store.save_workflow(
+                job_id=job_id,
+                workflow_result=workflow_result,
+            )
+
+            # Store only a small summary in test_jobs.
+            job_summary = self._build_job_summary(
+                workflow_result
+            )
+
             self._update_job(
                 job_id=job_id,
                 status="completed",
-                result=workflow_result.model_dump(
-                    mode="json"
-                ),
+                result=job_summary,
                 error=None,
             )
 
@@ -236,6 +277,32 @@ class TestJobManager:
                 status="failed",
                 error=str(error),
             )
+
+    def _build_job_summary(
+        self,
+        workflow_result: WorkflowResult,
+    ) -> dict:
+        runs = workflow_result.runs
+
+        return {
+            "total_runs": len(runs),
+            "passed_runs": sum(
+                run.test_result.status == "passed"
+                for run in runs
+            ),
+            "failed_runs": sum(
+                run.test_result.status == "failed"
+                for run in runs
+            ),
+            "bug_reports": sum(
+                run.bug_report is not None
+                for run in runs
+            ),
+            "run_ids": [
+                run.test_result.run_id
+                for run in runs
+            ],
+        }
 
     def _update_job(
         self,
