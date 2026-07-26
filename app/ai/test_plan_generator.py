@@ -28,7 +28,7 @@ class TestPlanGenerator:
         self.client = InferenceClient(
             api_key=token,
             provider=provider,
-            timeout=120,
+            timeout=180,
         )
 
     def generate(
