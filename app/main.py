@@ -1,7 +1,10 @@
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-
+from app.services.url_security import (
+    UnsafeURLError,
+    URLSecurityPolicy,
+)
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
@@ -36,7 +39,21 @@ from app.services.test_orchestrator import TestOrchestrator
 
 
 load_dotenv()
+def read_boolean_setting(
+    name: str,
+    default: bool = False,
+) -> bool:
+    value = os.getenv(name)
 
+    if value is None:
+        return default
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 def create_orchestrator() -> TestOrchestrator:
     """Create the shared TestPilot workflow service."""
@@ -157,6 +174,7 @@ def health_check() -> HealthResponse:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_test(
+
     payload: RunTestRequest,
     request: Request,
 ) -> JobCreatedResponse:
@@ -165,9 +183,24 @@ def submit_test(
     job_manager: TestJobManager = (
         request.app.state.job_manager
     )
+    url_security_policy: URLSecurityPolicy = (
+    request.app.state.url_security_policy
+)
 
+try:
+    safe_page_url = (
+        url_security_policy.validate(
+            payload.page_url
+        )
+    )
+
+except UnsafeURLError as error:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=str(error),
+    ) from error
     job = job_manager.submit(
-        page_url=payload.page_url,
+        page_url=safe_page_url,
         objective=payload.objective,
         headless=payload.headless,
     )
