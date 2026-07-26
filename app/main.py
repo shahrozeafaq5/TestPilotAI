@@ -21,10 +21,11 @@ from app.api.schemas import (
     JobCreatedResponse,
     RunTestRequest,
 )
+from app.models.job import TestJob
 from app.services.job_manager import (
-    TestJob,
     TestJobManager,
 )
+from app.services.job_store import JobStore
 from app.services.test_orchestrator import (
     TestOrchestrator,
 )
@@ -71,8 +72,28 @@ async def lifespan(
 
     orchestrator = create_orchestrator()
 
+    database_path = os.getenv(
+        "TESTPILOT_DB_PATH",
+        "data/testpilot.db",
+    )
+
+    job_store = JobStore(
+        database_path=database_path
+    )
+
+    interrupted_jobs = (
+        job_store.mark_incomplete_as_failed()
+    )
+
+    if interrupted_jobs:
+        print(
+            f"Marked {interrupted_jobs} interrupted "
+            "job(s) as failed."
+        )
+
     app.state.job_manager = TestJobManager(
         orchestrator=orchestrator,
+        job_store=job_store,
         max_workers=1,
     )
 
@@ -89,7 +110,7 @@ app = FastAPI(
         "AI-powered autonomous web testing "
         "and bug-reporting API."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 

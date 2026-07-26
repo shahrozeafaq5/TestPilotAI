@@ -1,54 +1,30 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 
+from app.models.job import JobStatus, TestJob
+from app.services.job_store import JobStore
 from app.services.test_orchestrator import (
     TestOrchestrator,
-    WorkflowResult,
 )
-
-
-JobStatus = Literal[
-    "queued",
-    "running",
-    "completed",
-    "failed",
-]
 
 
 def current_utc_time() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class TestJob(BaseModel):
-    job_id: str
-    status: JobStatus
-
-    page_url: str
-    objective: str
-    headless: bool
-
-    created_at: datetime
-    updated_at: datetime
-
-    result: WorkflowResult | None = None
-    error: str | None = None
-
-
 class TestJobManager:
     def __init__(
         self,
         orchestrator: TestOrchestrator,
+        job_store: JobStore,
         max_workers: int = 1,
     ) -> None:
         self.orchestrator = orchestrator
-
-        self.jobs: dict[str, TestJob] = {}
+        self.job_store = job_store
         self.lock = Lock()
 
         self.executor = ThreadPoolExecutor(
@@ -76,7 +52,7 @@ class TestJobManager:
         )
 
         with self.lock:
-            self.jobs[job_id] = job
+            self.job_store.create(job)
 
         self.executor.submit(
             self._execute_job,
@@ -93,12 +69,12 @@ class TestJobManager:
         job_id: str,
     ) -> TestJob | None:
         with self.lock:
-            job = self.jobs.get(job_id)
+            job = self.job_store.get(job_id)
 
-            if job is None:
-                return None
+        if job is None:
+            return None
 
-            return job.model_copy(deep=True)
+        return job.model_copy(deep=True)
 
     def shutdown(self) -> None:
         self.executor.shutdown(
@@ -139,7 +115,9 @@ class TestJobManager:
             self._update_job(
                 job_id=job_id,
                 status="completed",
-                result=workflow_result,
+                result=workflow_result.model_dump(
+                    mode="json"
+                ),
                 error=None,
             )
 
@@ -154,11 +132,11 @@ class TestJobManager:
         self,
         job_id: str,
         status: JobStatus,
-        result: WorkflowResult | None = None,
+        result: dict | None = None,
         error: str | None = None,
     ) -> None:
         with self.lock:
-            job = self.jobs.get(job_id)
+            job = self.job_store.get(job_id)
 
             if job is None:
                 return
@@ -167,3 +145,5 @@ class TestJobManager:
             job.updated_at = current_utc_time()
             job.result = result
             job.error = error
+
+            self.job_store.update(job)
