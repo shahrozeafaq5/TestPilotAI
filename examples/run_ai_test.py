@@ -4,10 +4,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
-from app.ai.test_plan_generator import TestPlanGenerator
-from app.browser.page_inspector import PageInspector
-from app.browser.test_case_runner import TestCaseRunner
-from app.reporting.result_writer import ResultWriter
+from app.ai.bug_report_generator import (
+    BugReportGenerator,
+)
+from app.ai.test_plan_generator import (
+    TestPlanGenerator,
+)
+from app.services.test_orchestrator import (
+    TestOrchestrator,
+)
 
 
 load_dotenv()
@@ -22,6 +27,11 @@ html_file = (
 
 page_url = html_file.as_uri()
 
+objective = (
+    "Test the login form and verify that signing "
+    "in displays the welcome message."
+)
+
 token = os.getenv("HF_TOKEN")
 model_id = os.getenv("HF_MODEL")
 
@@ -31,14 +41,20 @@ if not token or not model_id:
     )
 
 
-generator = TestPlanGenerator(
+test_plan_generator = TestPlanGenerator(
     token=token,
     model_id=model_id,
 )
 
-inspector = PageInspector()
-runner = TestCaseRunner()
-writer = ResultWriter()
+bug_report_generator = BugReportGenerator(
+    token=token,
+    model_id=model_id,
+)
+
+orchestrator = TestOrchestrator(
+    test_plan_generator=test_plan_generator,
+    bug_report_generator=bug_report_generator,
+)
 
 
 with sync_playwright() as playwright:
@@ -46,52 +62,25 @@ with sync_playwright() as playwright:
         headless=False
     )
 
-    inspection_context = browser.new_context()
-    inspection_page = inspection_context.new_page()
-
-    inspection_page.goto(
-        page_url,
-        wait_until="domcontentloaded",
-    )
-
-    inspection = inspector.inspect(
-        inspection_page
-    )
-
-    print("\nDiscovered page elements:")
-    print(inspection.model_dump_json(indent=2))
-
-    inspection_context.close()
-
-    test_plan = generator.generate(
-        website_name=inspection.title,
-        start_url=inspection.url,
-        objective=(
-            "Test the login form and verify that "
-            "signing in displays the welcome message."
-        ),
-        page_description=inspection.model_dump_json(
-            indent=2
-        ),
-    )
-
-    print("\nGenerated test plan:")
-    print(test_plan.model_dump_json(indent=2))
-
-    for test_case in test_plan.test_cases:
-        print(f"\nRunning: {test_case.name}")
-
-        result = runner.run(
+    try:
+        workflow_result = orchestrator.run(
             browser=browser,
-            test_case=test_case,
+            page_url=page_url,
+            objective=objective,
         )
 
-        print(result.model_dump_json(indent=2))
+    finally:
+        browser.close()
 
-        report_path = writer.write(result)
 
-        print(
-            f"\nJSON report saved to: {report_path}"
-        )
+print("\nWorkflow completed.")
+print(
+    f"Test cases executed: "
+    f"{len(workflow_result.runs)}"
+)
 
-    browser.close()
+for run in workflow_result.runs:
+    print(
+        f"- {run.test_result.test_name}: "
+        f"{run.test_result.status}"
+    )
