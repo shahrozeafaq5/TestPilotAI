@@ -25,6 +25,7 @@ from app.ai.test_plan_generator import (
 from app.api.schemas import (
     HealthResponse,
     JobCreatedResponse,
+    JobDeletedResponse,
     JobListResponse,
     RunTestRequest,
 )
@@ -192,6 +193,70 @@ def list_test_jobs(
         count=len(jobs),
         jobs=jobs,
     )
+@app.post(
+    "/tests/jobs/{job_id}/cancel",
+    response_model=TestJob,
+)
+def cancel_test_job(
+    job_id: str,
+    request: Request,
+) -> TestJob:
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
+
+    try:
+        job = job_manager.cancel(job_id)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Test job was not found.",
+        )
+
+    return job
+
+
+@app.delete(
+    "/tests/jobs/{job_id}",
+    response_model=JobDeletedResponse,
+)
+def delete_test_job(
+    job_id: str,
+    request: Request,
+) -> JobDeletedResponse:
+    job_manager: TestJobManager = (
+        request.app.state.job_manager
+    )
+
+    try:
+        deleted = job_manager.delete(job_id)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail="Test job was not found.",
+        )
+
+    return JobDeletedResponse(
+        job_id=job_id,
+        message="Test job was deleted.",
+    )
+
+
+
 @app.get(
     "/tests/jobs/{job_id}",
     response_model=TestJob,

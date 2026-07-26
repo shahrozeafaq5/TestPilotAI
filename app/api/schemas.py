@@ -1,12 +1,14 @@
 from typing import Literal
 from urllib.parse import urlparse
-from app.models.job import TestJob
+
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     field_validator,
 )
+
+from app.models.job import TestJob
 
 
 class RunTestRequest(BaseModel):
@@ -59,6 +61,13 @@ class JobCreatedResponse(BaseModel):
     ]
 
     status_url: str
+
+
 class JobListResponse(BaseModel):
     count: int
     jobs: list[TestJob]
+
+
+class JobDeletedResponse(BaseModel):
+    job_id: str
+    message: str

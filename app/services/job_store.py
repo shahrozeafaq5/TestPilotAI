@@ -2,8 +2,9 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from app.models.job import TestJob
+from app.models.job import JobStatus, TestJob
 
 
 class JobStore:
@@ -19,45 +20,11 @@ class JobStore:
         )
 
         self._initialize_database()
-    def list_recent(
-    self,
-    limit: int = 20,
-    status: str | None = None,
-) -> list[TestJob]:
-        query = """
-            SELECT
-                job_id,
-                status,
-                page_url,
-                objective,
-                headless,
-                created_at,
-                updated_at,
-                result_json,
-                error
-            FROM test_jobs
-        """
 
-        parameters: list[object] = []
-
-        if status is not None:
-            query += " WHERE status = ?"
-            parameters.append(status)
-
-        query += " ORDER BY created_at DESC LIMIT ?"
-        parameters.append(limit)
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                query,
-                parameters,
-            ).fetchall()
-
-        return [
-            self._row_to_job(row)
-            for row in rows
-        ]
-    def create(self, job: TestJob) -> None:
+    def create(
+        self,
+        job: TestJob,
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -89,7 +56,10 @@ class JobStore:
 
             connection.commit()
 
-    def update(self, job: TestJob) -> None:
+    def update(
+        self,
+        job: TestJob,
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -146,6 +116,62 @@ class JobStore:
 
         return self._row_to_job(row)
 
+    def list_recent(
+        self,
+        limit: int = 20,
+        status: JobStatus | None = None,
+    ) -> list[TestJob]:
+        query = """
+            SELECT
+                job_id,
+                status,
+                page_url,
+                objective,
+                headless,
+                created_at,
+                updated_at,
+                result_json,
+                error
+            FROM test_jobs
+        """
+
+        parameters: list[object] = []
+
+        if status is not None:
+            query += " WHERE status = ?"
+            parameters.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        parameters.append(limit)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                parameters,
+            ).fetchall()
+
+        return [
+            self._row_to_job(row)
+            for row in rows
+        ]
+
+    def delete(
+        self,
+        job_id: str,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM test_jobs
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+
+            connection.commit()
+
+        return cursor.rowcount > 0
+
     def mark_incomplete_as_failed(self) -> int:
         now = datetime.now(timezone.utc).isoformat()
 
@@ -161,13 +187,16 @@ class JobStore:
                 """,
                 (
                     now,
-                    "Server restarted before the job completed.",
+                    (
+                        "Server restarted before "
+                        "the job completed."
+                    ),
                 ),
             )
 
             connection.commit()
 
-            return cursor.rowcount
+        return cursor.rowcount
 
     def _initialize_database(self) -> None:
         with self._connect() as connection:
@@ -236,7 +265,7 @@ class JobStore:
 
     def _serialize_result(
         self,
-        result: dict | None,
+        result: dict[str, Any] | None,
     ) -> str | None:
         if result is None:
             return None
