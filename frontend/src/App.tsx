@@ -1,14 +1,18 @@
 import {
   type FormEvent,
+  useCallback,
   useEffect,
   useState,
 } from "react";
 
 import {
   getHealth,
+  getJob,
+  listJobs,
   submitTest,
   type HealthResponse,
   type JobCreatedResponse,
+  type TestJob,
 } from "./services/api";
 
 import "./App.css";
@@ -19,6 +23,19 @@ const DEFAULT_PAGE_URL =
 
 const DEFAULT_OBJECTIVE =
   "Test the login form and verify that signing in displays the welcome message.";
+
+
+function formatDate(
+  value: string,
+): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
 
 
 function App() {
@@ -46,9 +63,48 @@ function App() {
   const [submittedJob, setSubmittedJob] =
     useState<JobCreatedResponse | null>(null);
 
+  const [currentJob, setCurrentJob] =
+    useState<TestJob | null>(null);
+
+  const [pollingError, setPollingError] =
+    useState<string | null>(null);
+
+  const [jobs, setJobs] =
+    useState<TestJob[]>([]);
+
+  const [isLoadingJobs, setIsLoadingJobs] =
+    useState(false);
+
+  const [historyError, setHistoryError] =
+    useState<string | null>(null);
+
+
+  const loadJobs = useCallback(
+    async (): Promise<void> => {
+      setIsLoadingJobs(true);
+      setHistoryError(null);
+
+      try {
+        const response = await listJobs(20);
+
+        setJobs(response.jobs);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not load job history.";
+
+        setHistoryError(message);
+      } finally {
+        setIsLoadingJobs(false);
+      }
+    },
+    [],
+  );
+
 
   useEffect(() => {
-    async function checkBackend() {
+    async function checkBackend(): Promise<void> {
       try {
         const response = await getHealth();
 
@@ -60,6 +116,7 @@ function App() {
             ? error.message
             : "Could not connect to the backend.";
 
+        setHealth(null);
         setHealthError(message);
       }
     }
@@ -68,14 +125,94 @@ function App() {
   }, []);
 
 
+  useEffect(() => {
+    void loadJobs();
+  }, [loadJobs]);
+
+
+  useEffect(() => {
+    const activeJobId = submittedJob?.job_id;
+
+    if (!activeJobId) {
+      return;
+    }
+
+    let stopped = false;
+    let timeoutId: number | undefined;
+
+    async function pollJob(
+      jobId: string,
+    ): Promise<void> {
+      try {
+        const job = await getJob(jobId);
+
+        if (stopped) {
+          return;
+        }
+
+        setCurrentJob(job);
+        setPollingError(null);
+
+        const isStillProcessing =
+          job.status === "queued" ||
+          job.status === "running";
+
+        if (isStillProcessing) {
+          timeoutId = window.setTimeout(
+            () => {
+              void pollJob(jobId);
+            },
+            2000,
+          );
+        } else {
+          void loadJobs();
+        }
+      } catch (error) {
+        if (stopped) {
+          return;
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not retrieve the job status.";
+
+        setPollingError(message);
+
+        timeoutId = window.setTimeout(
+          () => {
+            void pollJob(jobId);
+          },
+          3000,
+        );
+      }
+    }
+
+    void pollJob(activeJobId);
+
+    return () => {
+      stopped = true;
+
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [
+    submittedJob?.job_id,
+    loadJobs,
+  ]);
+
+
   async function handleSubmit(
     event: FormEvent<HTMLFormElement>,
-  ) {
+  ): Promise<void> {
     event.preventDefault();
 
     setIsSubmitting(true);
     setSubmissionError(null);
     setSubmittedJob(null);
+    setCurrentJob(null);
+    setPollingError(null);
 
     try {
       const response = await submitTest({
@@ -85,6 +222,8 @@ function App() {
       });
 
       setSubmittedJob(response);
+
+      void loadJobs();
     } catch (error) {
       const message =
         error instanceof Error
@@ -98,7 +237,33 @@ function App() {
   }
 
 
+  function handleSelectJob(
+    job: TestJob,
+  ): void {
+    setCurrentJob(job);
+
+    setSubmittedJob({
+      job_id: job.job_id,
+      status: job.status,
+      status_url: `/tests/jobs/${job.job_id}`,
+    });
+
+    setPollingError(null);
+    setSubmissionError(null);
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  }
+
+
   const backendConnected = health !== null;
+
+  const liveJobStatus =
+    currentJob?.status ??
+    submittedJob?.status ??
+    null;
 
 
   return (
@@ -220,7 +385,9 @@ function App() {
             />
 
             <span className="checkbox-copy">
-              <strong>Run browser headlessly</strong>
+              <strong>
+                Run browser headlessly
+              </strong>
 
               <small>
                 Chromium runs without opening a visible
@@ -266,7 +433,7 @@ function App() {
 
         <aside className="result-panel">
           <p className="section-label">
-            LATEST SUBMISSION
+            SELECTED JOB
           </p>
 
           {!submittedJob && (
@@ -275,11 +442,11 @@ function App() {
                 ↗
               </div>
 
-              <h3>No job submitted yet</h3>
+              <h3>No job selected</h3>
 
               <p>
-                Submit the form to create a background
-                testing job.
+                Submit a new job or open one from the
+                history section below.
               </p>
             </div>
           )}
@@ -288,18 +455,33 @@ function App() {
             <div className="job-card">
               <div className="job-card-header">
                 <div>
-                  <span className="job-status">
+                  <span
+                    className={`job-status ${
+                      liveJobStatus ?? ""
+                    }`}
+                  >
                     <span className="status-dot" />
 
-                    {submittedJob.status}
+                    {liveJobStatus}
                   </span>
 
-                  <h3>Test job accepted</h3>
+                  <h3>
+                    {liveJobStatus === "completed"
+                      ? "Test completed"
+                      : liveJobStatus === "failed"
+                        ? "Test failed"
+                        : liveJobStatus === "cancelled"
+                          ? "Test cancelled"
+                          : "Test in progress"}
+                  </h3>
                 </div>
 
-                <span className="accepted-code">
-                  202
-                </span>
+                {(liveJobStatus === "queued" ||
+                  liveJobStatus === "running") && (
+                  <span className="live-indicator">
+                    LIVE
+                  </span>
+                )}
               </div>
 
               <dl className="job-details">
@@ -308,20 +490,219 @@ function App() {
                   <dd>{submittedJob.job_id}</dd>
                 </div>
 
-                <div>
-                  <dt>Status endpoint</dt>
-                  <dd>{submittedJob.status_url}</dd>
-                </div>
+                {currentJob && (
+                  <>
+                    <div>
+                      <dt>Website</dt>
+                      <dd>{currentJob.page_url}</dd>
+                    </div>
+
+                    <div>
+                      <dt>Objective</dt>
+                      <dd>{currentJob.objective}</dd>
+                    </div>
+                  </>
+                )}
               </dl>
 
-              <p className="job-note">
-                The background worker is now processing
-                this test. Live polling will be added in
-                the next step.
-              </p>
+              {(liveJobStatus === "queued" ||
+                liveJobStatus === "running") && (
+                <div className="processing-state">
+                  <span className="spinner" />
+
+                  <div>
+                    <strong>
+                      {liveJobStatus === "queued"
+                        ? "Waiting for worker"
+                        : "Running automated test"}
+                    </strong>
+
+                    <p>
+                      Status updates automatically every
+                      two seconds.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {liveJobStatus === "completed" &&
+                currentJob?.result && (
+                  <div className="result-summary">
+                    <div>
+                      <strong>
+                        {currentJob.result.total_runs}
+                      </strong>
+                      <span>Total runs</span>
+                    </div>
+
+                    <div>
+                      <strong>
+                        {currentJob.result.passed_runs}
+                      </strong>
+                      <span>Passed</span>
+                    </div>
+
+                    <div>
+                      <strong>
+                        {currentJob.result.failed_runs}
+                      </strong>
+                      <span>Failed</span>
+                    </div>
+
+                    <div>
+                      <strong>
+                        {currentJob.result.bug_reports}
+                      </strong>
+                      <span>Bug reports</span>
+                    </div>
+                  </div>
+                )}
+
+              {liveJobStatus === "completed" &&
+                !currentJob?.result && (
+                  <div className="job-note">
+                    The test completed, but no result
+                    summary was returned.
+                  </div>
+                )}
+
+              {liveJobStatus === "failed" && (
+                <div className="job-error">
+                  <strong>Execution failed</strong>
+
+                  <p>
+                    {currentJob?.error ??
+                      "The test job failed without an error message."}
+                  </p>
+                </div>
+              )}
+
+              {liveJobStatus === "cancelled" && (
+                <div className="job-note">
+                  This test was cancelled before execution.
+                </div>
+              )}
+
+              {pollingError && (
+                <div className="job-error polling-error">
+                  <strong>Status update failed</strong>
+                  <p>{pollingError}</p>
+                </div>
+              )}
             </div>
           )}
         </aside>
+      </section>
+
+      <section className="history-section">
+        <div className="history-header">
+          <div>
+            <p className="section-label">
+              JOB HISTORY
+            </p>
+
+            <h2>Recent test jobs</h2>
+
+            <p>
+              These jobs are loaded from the SQLite
+              database.
+            </p>
+          </div>
+
+          <button
+            className="history-refresh"
+            type="button"
+            onClick={() => {
+              void loadJobs();
+            }}
+            disabled={isLoadingJobs}
+          >
+            {isLoadingJobs
+              ? "Refreshing..."
+              : "Refresh history"}
+          </button>
+        </div>
+
+        {historyError && (
+          <div className="history-message history-error">
+            {historyError}
+          </div>
+        )}
+
+        {isLoadingJobs && jobs.length === 0 && (
+          <div className="history-message">
+            Loading saved jobs...
+          </div>
+        )}
+
+        {!isLoadingJobs &&
+          !historyError &&
+          jobs.length === 0 && (
+            <div className="history-empty">
+              <h3>No saved jobs yet</h3>
+
+              <p>
+                Submit your first automated test to create
+                a job record.
+              </p>
+            </div>
+          )}
+
+        {jobs.length > 0 && (
+          <div className="history-list">
+            {jobs.map((job) => {
+              const isSelected =
+                submittedJob?.job_id === job.job_id;
+
+              return (
+                <article
+                  className={
+                    isSelected
+                      ? "history-card selected"
+                      : "history-card"
+                  }
+                  key={job.job_id}
+                >
+                  <div className="history-card-top">
+                    <span
+                      className={`history-status ${job.status}`}
+                    >
+                      <span />
+
+                      {job.status}
+                    </span>
+
+                    <time dateTime={job.created_at}>
+                      {formatDate(job.created_at)}
+                    </time>
+                  </div>
+
+                  <h3>{job.objective}</h3>
+
+                  <p className="history-url">
+                    {job.page_url}
+                  </p>
+
+                  <div className="history-card-footer">
+                    <code>{job.job_id}</code>
+
+                    <button
+                      className="history-open"
+                      type="button"
+                      onClick={() => {
+                        handleSelectJob(job);
+                      }}
+                    >
+                      {isSelected
+                        ? "Selected"
+                        : "Open job"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
     </main>
   );
