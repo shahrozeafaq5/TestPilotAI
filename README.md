@@ -365,6 +365,6 @@ This project is licensed under the MIT License.
 
 # 👨‍💻 Author
 
-**Mustafa**
+**Shahroze Afaq**
 
 Built as a full-stack AI-powered browser testing platform using FastAPI, React, Playwright, and Large Language Models.
