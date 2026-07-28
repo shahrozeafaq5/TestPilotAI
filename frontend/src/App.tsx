@@ -6,12 +6,18 @@ import {
 } from "react";
 
 import {
+  cancelJob,
+  deleteJob,
   getHealth,
   getJob,
+  getJobRuns,
+  getRunScreenshotUrl,
   listJobs,
   submitTest,
   type HealthResponse,
   type JobCreatedResponse,
+  type StoredDiagnostics,
+  type StoredTestRun,
   type TestJob,
 } from "./services/api";
 
@@ -25,6 +31,12 @@ const DEFAULT_OBJECTIVE =
   "Test the login form and verify that signing in displays the welcome message.";
 
 
+type JobAction =
+  | "cancel"
+  | "delete"
+  | null;
+
+
 function formatDate(
   value: string,
 ): string {
@@ -35,6 +47,32 @@ function formatDate(
   }
 
   return date.toLocaleString();
+}
+
+
+function formatDiagnosticItem(
+  value: unknown,
+): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  const serializedValue =
+    JSON.stringify(value, null, 2);
+
+  return serializedValue ?? String(value);
+}
+
+
+function getDiagnosticCount(
+  diagnostics: StoredDiagnostics,
+): number {
+  return (
+    diagnostics.console_errors.length +
+    diagnostics.page_errors.length +
+    diagnostics.failed_requests.length +
+    diagnostics.http_errors.length
+  );
 }
 
 
@@ -76,6 +114,24 @@ function App() {
     useState(false);
 
   const [historyError, setHistoryError] =
+    useState<string | null>(null);
+
+  const [runs, setRuns] =
+    useState<StoredTestRun[]>([]);
+
+  const [isLoadingRuns, setIsLoadingRuns] =
+    useState(false);
+
+  const [runsError, setRunsError] =
+    useState<string | null>(null);
+
+  const [activeJobAction, setActiveJobAction] =
+    useState<JobAction>(null);
+
+  const [jobActionError, setJobActionError] =
+    useState<string | null>(null);
+
+  const [jobActionMessage, setJobActionMessage] =
     useState<string | null>(null);
 
 
@@ -203,6 +259,75 @@ function App() {
   ]);
 
 
+  useEffect(() => {
+    const selectedJobId =
+      currentJob?.job_id ??
+      submittedJob?.job_id;
+
+    const selectedJobStatus =
+      currentJob?.status ??
+      submittedJob?.status;
+
+    if (
+      !selectedJobId ||
+      selectedJobStatus !== "completed"
+    ) {
+      setRuns([]);
+      setRunsError(null);
+      setIsLoadingRuns(false);
+
+      return;
+    }
+
+    let stopped = false;
+
+    async function loadRuns(
+      jobId: string,
+    ): Promise<void> {
+      setIsLoadingRuns(true);
+      setRunsError(null);
+
+      try {
+        const response =
+          await getJobRuns(jobId);
+
+        if (stopped) {
+          return;
+        }
+
+        setRuns(response.runs);
+      } catch (error) {
+        if (stopped) {
+          return;
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not load test run details.";
+
+        setRuns([]);
+        setRunsError(message);
+      } finally {
+        if (!stopped) {
+          setIsLoadingRuns(false);
+        }
+      }
+    }
+
+    void loadRuns(selectedJobId);
+
+    return () => {
+      stopped = true;
+    };
+  }, [
+    currentJob?.job_id,
+    currentJob?.status,
+    submittedJob?.job_id,
+    submittedJob?.status,
+  ]);
+
+
   async function handleSubmit(
     event: FormEvent<HTMLFormElement>,
   ): Promise<void> {
@@ -213,6 +338,10 @@ function App() {
     setSubmittedJob(null);
     setCurrentJob(null);
     setPollingError(null);
+    setRuns([]);
+    setRunsError(null);
+    setJobActionError(null);
+    setJobActionMessage(null);
 
     try {
       const response = await submitTest({
@@ -250,11 +379,117 @@ function App() {
 
     setPollingError(null);
     setSubmissionError(null);
+    setRuns([]);
+    setRunsError(null);
+    setJobActionError(null);
+    setJobActionMessage(null);
 
     window.scrollTo({
       top: 0,
       behavior: "smooth",
     });
+  }
+
+
+  const selectedJobId =
+    currentJob?.job_id ??
+    submittedJob?.job_id ??
+    null;
+
+
+  async function handleCancelJob(): Promise<void> {
+    if (!selectedJobId) {
+      return;
+    }
+
+    setActiveJobAction("cancel");
+    setJobActionError(null);
+    setJobActionMessage(null);
+
+    try {
+      const cancelledJob =
+        await cancelJob(selectedJobId);
+
+      setCurrentJob(cancelledJob);
+
+      setSubmittedJob((previousJob) => {
+        if (!previousJob) {
+          return {
+            job_id: cancelledJob.job_id,
+            status: cancelledJob.status,
+            status_url:
+              `/tests/jobs/${cancelledJob.job_id}`,
+          };
+        }
+
+        return {
+          ...previousJob,
+          status: cancelledJob.status,
+        };
+      });
+
+      setJobActionMessage(
+        "The queued job was cancelled.",
+      );
+
+      await loadJobs();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The job could not be cancelled.";
+
+      setJobActionError(message);
+    } finally {
+      setActiveJobAction(null);
+    }
+  }
+
+
+  async function handleDeleteJob(): Promise<void> {
+    if (!selectedJobId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Delete this job and all of its stored runs, steps, diagnostics and bug reports?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActiveJobAction("delete");
+    setJobActionError(null);
+    setJobActionMessage(null);
+
+    try {
+      await deleteJob(selectedJobId);
+
+      setJobs((existingJobs) =>
+        existingJobs.filter(
+          (job) =>
+            job.job_id !== selectedJobId,
+        ),
+      );
+
+      setSubmittedJob(null);
+      setCurrentJob(null);
+      setRuns([]);
+      setRunsError(null);
+      setPollingError(null);
+
+      await loadJobs();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The job could not be deleted.";
+
+      setJobActionError(message);
+    } finally {
+      setActiveJobAction(null);
+    }
   }
 
 
@@ -264,6 +499,11 @@ function App() {
     currentJob?.status ??
     submittedJob?.status ??
     null;
+
+  const canDeleteSelectedJob =
+    liveJobStatus === "completed" ||
+    liveJobStatus === "failed" ||
+    liveJobStatus === "cancelled";
 
 
   return (
@@ -532,6 +772,7 @@ function App() {
                       <strong>
                         {currentJob.result.total_runs}
                       </strong>
+
                       <span>Total runs</span>
                     </div>
 
@@ -539,6 +780,7 @@ function App() {
                       <strong>
                         {currentJob.result.passed_runs}
                       </strong>
+
                       <span>Passed</span>
                     </div>
 
@@ -546,6 +788,7 @@ function App() {
                       <strong>
                         {currentJob.result.failed_runs}
                       </strong>
+
                       <span>Failed</span>
                     </div>
 
@@ -553,16 +796,9 @@ function App() {
                       <strong>
                         {currentJob.result.bug_reports}
                       </strong>
+
                       <span>Bug reports</span>
                     </div>
-                  </div>
-                )}
-
-              {liveJobStatus === "completed" &&
-                !currentJob?.result && (
-                  <div className="job-note">
-                    The test completed, but no result
-                    summary was returned.
                   </div>
                 )}
 
@@ -586,13 +822,400 @@ function App() {
               {pollingError && (
                 <div className="job-error polling-error">
                   <strong>Status update failed</strong>
+
                   <p>{pollingError}</p>
                 </div>
               )}
+
+              {jobActionError && (
+                <div className="job-error action-message">
+                  <strong>Job action failed</strong>
+
+                  <p>{jobActionError}</p>
+                </div>
+              )}
+
+              {jobActionMessage && (
+                <div className="job-action-success">
+                  {jobActionMessage}
+                </div>
+              )}
+
+              <div className="job-actions">
+                {liveJobStatus === "queued" && (
+                  <button
+                    className="cancel-job-button"
+                    type="button"
+                    onClick={() => {
+                      void handleCancelJob();
+                    }}
+                    disabled={
+                      activeJobAction !== null
+                    }
+                  >
+                    {activeJobAction === "cancel"
+                      ? "Cancelling..."
+                      : "Cancel queued job"}
+                  </button>
+                )}
+
+                {canDeleteSelectedJob && (
+                  <button
+                    className="delete-job-button"
+                    type="button"
+                    onClick={() => {
+                      void handleDeleteJob();
+                    }}
+                    disabled={
+                      activeJobAction !== null
+                    }
+                  >
+                    {activeJobAction === "delete"
+                      ? "Deleting..."
+                      : "Delete job"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </aside>
       </section>
+
+      {submittedJob &&
+        liveJobStatus === "completed" && (
+          <section className="runs-section">
+            <div className="runs-header">
+              <div>
+                <p className="section-label">
+                  RUN DETAILS
+                </p>
+
+                <h2>Executed test cases</h2>
+
+                <p>
+                  Steps, diagnostics, screenshots and
+                  generated bug reports for this job.
+                </p>
+              </div>
+
+              {!isLoadingRuns && (
+                <span className="run-count">
+                  {runs.length}{" "}
+                  {runs.length === 1
+                    ? "run"
+                    : "runs"}
+                </span>
+              )}
+            </div>
+
+            {isLoadingRuns && (
+              <div className="runs-message">
+                <span className="spinner" />
+
+                Loading detailed run results...
+              </div>
+            )}
+
+            {runsError && (
+              <div className="runs-message runs-error">
+                {runsError}
+              </div>
+            )}
+
+            {!isLoadingRuns &&
+              !runsError &&
+              runs.length === 0 && (
+                <div className="runs-message">
+                  This job completed, but no detailed test
+                  runs were stored.
+                </div>
+              )}
+
+            {runs.length > 0 && (
+              <div className="runs-list">
+                {runs.map((run) => {
+                  const diagnosticCount =
+                    getDiagnosticCount(
+                      run.diagnostics,
+                    );
+
+                  return (
+                    <article
+                      className="run-card"
+                      key={run.run_id}
+                    >
+                      <header className="run-card-header">
+                        <div>
+                          <span
+                            className={`run-status ${run.status}`}
+                          >
+                            <span />
+
+                            {run.status}
+                          </span>
+
+                          <h3>{run.test_name}</h3>
+
+                          <p>{run.objective}</p>
+                        </div>
+
+                        <div className="run-meta">
+                          <code>{run.run_id}</code>
+
+                          <time
+                            dateTime={run.created_at}
+                          >
+                            {formatDate(
+                              run.created_at,
+                            )}
+                          </time>
+                        </div>
+                      </header>
+
+                      {run.error && (
+                        <div className="run-error">
+                          <strong>Run error</strong>
+
+                          <p>{run.error}</p>
+                        </div>
+                      )}
+
+                      <div className="run-subsection">
+                        <div className="run-subsection-heading">
+                          <h4>Executed steps</h4>
+
+                          <span>
+                            {run.steps.length}
+                          </span>
+                        </div>
+
+                        {run.steps.length === 0 && (
+                          <p className="section-empty">
+                            No steps were stored for this
+                            run.
+                          </p>
+                        )}
+
+                        {run.steps.length > 0 && (
+                          <div className="steps-list">
+                            {run.steps.map((step) => {
+                              const screenshotUrl =
+                                step.screenshot
+                                  ? getRunScreenshotUrl(
+                                      run.run_id,
+                                      step.screenshot,
+                                    )
+                                  : "";
+
+                              return (
+                                <div
+                                  className="step-card"
+                                  key={
+                                    `${run.run_id}-` +
+                                    `${step.step_number}`
+                                  }
+                                >
+                                  <div className="step-number">
+                                    {step.step_number}
+                                  </div>
+
+                                  <div className="step-content">
+                                    <div className="step-heading">
+                                      <strong>
+                                        {step.description}
+                                      </strong>
+
+                                      <span
+                                        className={`step-status ${step.status}`}
+                                      >
+                                        {step.status}
+                                      </span>
+                                    </div>
+
+                                    {step.error && (
+                                      <p className="step-error">
+                                        {step.error}
+                                      </p>
+                                    )}
+
+                                    {step.screenshot &&
+                                      screenshotUrl && (
+                                        <div className="screenshot-card">
+                                          <a
+                                            href={
+                                              screenshotUrl
+                                            }
+                                            target="_blank"
+                                            rel="noreferrer"
+                                          >
+                                            <img
+                                              src={
+                                                screenshotUrl
+                                              }
+                                              alt={
+                                                `Screenshot for ` +
+                                                `step ${step.step_number}`
+                                              }
+                                              loading="lazy"
+                                            />
+                                          </a>
+
+                                          <div className="screenshot-footer">
+                                            <span>
+                                              Step screenshot
+                                            </span>
+
+                                            <a
+                                              href={
+                                                screenshotUrl
+                                              }
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              Open full image
+                                            </a>
+                                          </div>
+                                        </div>
+                                      )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="run-subsection">
+                        <div className="run-subsection-heading">
+                          <h4>Diagnostics</h4>
+
+                          <span>
+                            {diagnosticCount}
+                          </span>
+                        </div>
+
+                        {diagnosticCount === 0 && (
+                          <div className="diagnostics-clear">
+                            No console, page, network or
+                            HTTP errors were captured.
+                          </div>
+                        )}
+
+                        {run.diagnostics.console_errors
+                          .length > 0 && (
+                          <div className="diagnostic-group">
+                            <h5>Console errors</h5>
+
+                            {run.diagnostics.console_errors.map(
+                              (item, index) => (
+                                <pre
+                                  key={
+                                    `console-${index}`
+                                  }
+                                >
+                                  {formatDiagnosticItem(
+                                    item,
+                                  )}
+                                </pre>
+                              ),
+                            )}
+                          </div>
+                        )}
+
+                        {run.diagnostics.page_errors
+                          .length > 0 && (
+                          <div className="diagnostic-group">
+                            <h5>Page errors</h5>
+
+                            {run.diagnostics.page_errors.map(
+                              (item, index) => (
+                                <pre
+                                  key={`page-${index}`}
+                                >
+                                  {formatDiagnosticItem(
+                                    item,
+                                  )}
+                                </pre>
+                              ),
+                            )}
+                          </div>
+                        )}
+
+                        {run.diagnostics.failed_requests
+                          .length > 0 && (
+                          <div className="diagnostic-group">
+                            <h5>Failed requests</h5>
+
+                            {run.diagnostics.failed_requests.map(
+                              (item, index) => (
+                                <pre
+                                  key={
+                                    `request-${index}`
+                                  }
+                                >
+                                  {formatDiagnosticItem(
+                                    item,
+                                  )}
+                                </pre>
+                              ),
+                            )}
+                          </div>
+                        )}
+
+                        {run.diagnostics.http_errors
+                          .length > 0 && (
+                          <div className="diagnostic-group">
+                            <h5>HTTP errors</h5>
+
+                            {run.diagnostics.http_errors.map(
+                              (item, index) => (
+                                <pre
+                                  key={`http-${index}`}
+                                >
+                                  {formatDiagnosticItem(
+                                    item,
+                                  )}
+                                </pre>
+                              ),
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="run-subsection">
+                        <div className="run-subsection-heading">
+                          <h4>Bug report</h4>
+
+                          <span>
+                            {run.bug_report
+                              ? "Generated"
+                              : "None"}
+                          </span>
+                        </div>
+
+                        {!run.bug_report && (
+                          <p className="section-empty">
+                            No bug report was generated
+                            because this run passed without
+                            relevant diagnostics.
+                          </p>
+                        )}
+
+                        {Boolean(run.bug_report) && (
+                          <pre className="bug-report">
+                            {formatDiagnosticItem(
+                              run.bug_report,
+                            )}
+                          </pre>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
       <section className="history-section">
         <div className="history-header">
@@ -629,11 +1252,12 @@ function App() {
           </div>
         )}
 
-        {isLoadingJobs && jobs.length === 0 && (
-          <div className="history-message">
-            Loading saved jobs...
-          </div>
-        )}
+        {isLoadingJobs &&
+          jobs.length === 0 && (
+            <div className="history-message">
+              Loading saved jobs...
+            </div>
+          )}
 
         {!isLoadingJobs &&
           !historyError &&
@@ -652,7 +1276,8 @@ function App() {
           <div className="history-list">
             {jobs.map((job) => {
               const isSelected =
-                submittedJob?.job_id === job.job_id;
+                submittedJob?.job_id ===
+                job.job_id;
 
               return (
                 <article
@@ -672,8 +1297,12 @@ function App() {
                       {job.status}
                     </span>
 
-                    <time dateTime={job.created_at}>
-                      {formatDate(job.created_at)}
+                    <time
+                      dateTime={job.created_at}
+                    >
+                      {formatDate(
+                        job.created_at,
+                      )}
                     </time>
                   </div>
 
