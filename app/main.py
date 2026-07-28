@@ -136,7 +136,16 @@ async def lifespan(
     app.state.artifact_service = ArtifactService(
         runs_directory=artifacts_path,
     )
-
+    app.state.url_security_policy = URLSecurityPolicy(
+    allow_local_urls=read_boolean_setting(
+        "TESTPILOT_ALLOW_LOCAL_URLS",
+        default=False,
+    ),
+    allow_file_urls=read_boolean_setting(
+        "TESTPILOT_ALLOW_FILE_URLS",
+        default=False,
+    ),
+)
     try:
         yield
 
